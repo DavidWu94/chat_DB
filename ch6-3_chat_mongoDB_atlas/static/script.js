@@ -1,0 +1,200 @@
+mermaid.initialize({startOnLoad:false});
+
+let username = sessionStorage.getItem('chat_username');
+if(!username){
+  username = '使用者'+Math.floor(Math.random()*1000);
+  sessionStorage.setItem('chat_username',username);
+}
+
+$("#send-button").on("click", send);
+$("#message-input").on("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault();
+    send();
+  }
+});
+
+$("#clear-btn").on("click", () => {
+  if (confirm("確定要清空聊天？")) socket.emit("clear_chat");
+});
+
+function scrollBottom() {
+  const m = document.getElementById("chat-messages");
+  m.scrollTop = m.scrollHeight;
+}
+
+function format(txt) {
+  txt = txt.trim();
+  let html = marked.parse(txt);
+  html = DOMPurify.sanitize(html);
+
+  html = html.replace(/<pre><code class="language-mermaid">([\s\S]*?)<\/code><\/pre>/g, (m, c) => {
+    const raw = c.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+    return `<div class="mermaid-container"><button class="copy-btn" onclick="copyText(this,'${encodeURIComponent(
+      raw
+    )}')">複製</button><pre class="mermaid">${raw}</pre></div>`;
+  });
+
+  html = html.replace(/<pre><code class="language-([\w]+)">([\s\S]*?)<\/code><\/pre>/g, (m, l, c) => {
+    if (l === "mermaid") return m;
+    return `<div class="code-block"><button class="copy-btn" onclick="copyText(this,'${encodeURIComponent(
+      c
+    )}')">複製</button><pre><code class="language-${l} hljs">${c}</code></pre></div>`;
+  });
+
+  return html;
+}
+
+function renderCode() {
+  requestAnimationFrame(() => {
+    document.querySelectorAll("pre code").forEach((b) => hljs.highlightElement(b));
+    mermaid.init(undefined, ".mermaid");
+  });
+}
+
+function copyText(btn, encoded) {
+  const text = decodeURIComponent(encoded);
+  navigator.clipboard
+    .writeText(text)
+    .then(() => {
+      btn.innerText = "已複製！";
+      setTimeout(() => (btn.innerText = "複製"), 1500);
+    })
+    .catch(() => alert("複製失敗"));
+}
+
+function addMessage(content, isMe, sender, timeStr) {
+  const time = timeStr || new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const html = `
+    <div class="message ${isMe ? "user-message" : "other-message"} clearfix">
+      ${!isMe ? `<div class="user-info"><span class="user-name">${sender}</span></div>` : ""}
+      <div class="message-content">${format(content)}</div>
+      <div class="message-time">${time}</div>
+    </div>`;
+  $("#chat-messages").append(html);
+  renderCode();
+  scrollBottom();
+}
+
+$(".emoji-btn").on("click", function () {
+  const emojis = ["😊", "😂", "😍", "👍", "❤️", "😉", "🎉", "👋"];
+  if ($(".emoji-menu").length) {
+    $(".emoji-menu").remove();
+    return;
+  }
+  let menu = '<div class="emoji-menu p-2 bg-white rounded shadow">';
+  emojis.forEach((e) => (menu += `<span class="emoji-item p-1" style="cursor:pointer;font-size:1.5rem;">${e}</span>`));
+  menu += "</div>";
+  $(this).after(menu);
+  $(".emoji-item").on("click", function () {
+    $("#message-input").val($("#message-input").val() + $(this).text());
+    $(".emoji-menu").remove();
+  });
+  $(document).one("click", (e) => {
+    if (!$(e.target).hasClass("emoji-btn")) $(".emoji-menu").remove();
+  });
+});
+
+const socket = io();
+
+socket.on("user_count", (d) => $("#online-count").text(d.count));
+
+function updateStatus(ok, msg = "已連線") {
+  const el = $("#connection-status");
+  if (ok) {
+    el.text(msg).css("background-color", "#d4edda");
+    setTimeout(() => el.fadeOut(), 3000);
+  } else {
+    el.stop().show().text(msg).css("background-color", "#f8d7da");
+  }
+}
+
+socket.on("connect", () => {
+  updateStatus(true);
+  socket.emit("join", { username });
+});
+socket.on("disconnect", () => updateStatus(false, "連線中斷"));
+socket.on("connect_error", () => updateStatus(false, "連線錯誤"));
+
+function addSystem(text) {
+  $("#chat-messages").append(`<div class="connection-status">${text}</div>`);
+  scrollBottom();
+}
+
+// 載入歷史聊天記錄（伺服器在 join 後送來）
+socket.on("history", (list) => {
+  $("#chat-messages").empty();
+  list.forEach((m) => addMessage(m.content, m.username === username, m.username, m.time));
+});
+
+// 清空聊天（伺服器刪除資料後通知所有人）
+socket.on("chat_cleared", () => {
+  $("#chat-messages").empty();
+  addSystem("聊天記錄已清空");
+});
+
+socket.on("user_joined", (d) => addSystem(`${d.username} 加入了聊天`));
+socket.on("user_left", (d) => addSystem(`${d.username} 離開了聊天`));
+
+function send() {
+  const txt = $("#message-input").val().trim();
+  if (!txt) return;
+  addMessage(txt, true, username);
+  socket.emit("send_message", {
+    username,
+    content: txt,
+  });
+  $("#message-input").val("").height("auto");
+  scrollBottom();
+}
+
+socket.on("chat_message", (d) =>
+  addMessage(d.content, d.username === username, d.username)
+);
+
+function showTyping(user) {
+  if (user === username) return;
+  const cls = "typing-" + user.replace(/\s+/g, "-");
+  if ($("." + cls).length) {
+    clearTimeout($("." + cls).data("timer"));
+  } else {
+    $("#chat-messages").append(
+      `<div class="${cls} typing-indicator">${user} 正在輸入...</div>`
+    );
+  }
+  const timer = setTimeout(
+    () => $("." + cls).fadeOut(function () { $(this).remove(); }),
+    3000
+  );
+  $("." + cls).data("timer", timer);
+  scrollBottom();
+}
+
+socket.on("typing", (d) => showTyping(d.username));
+
+let typingTimer;
+$("#message-input").on("input", function () {
+  this.style.height = "auto";
+  this.style.height = this.scrollHeight + "px";
+  if (!typingTimer) {
+    socket.emit("typing", { username });
+    typingTimer = setTimeout(() => (typingTimer = null), 1000);
+  }
+});
+
+$("#change-name-btn").on("click", () => {
+  const v = prompt("輸入新名稱：", username);
+  const name = v ? v.trim() : "";
+  if (name && name !== username) {
+    socket.emit("change_username", {
+      oldUsername: username,
+      newUsername: name,
+    });
+    username = name;
+    sessionStorage.setItem("chat_username", username);
+  }
+});
+
+socket.on("user_changed_name", (d) =>
+  addSystem(`${d.oldUsername} 更名為 ${d.newUsername}`)
+);

@@ -1,0 +1,14 @@
+[project]
+name = "chat-db"
+version = "0.1.0"
+description = "Flask + Socket.IO chat room with MongoDB Atlas"
+readme = "README.md"
+requires-python = "==3.12.*"
+dependencies = [
+    "eventlet",
+    "flask",
+    "flask-socketio",
+    "greenlet",
+    "pymongo",
+    "python-dotenv",
+]
